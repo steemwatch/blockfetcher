@@ -30,10 +30,6 @@ import (
 // When an error is returned from any for the following methods,
 // the fetching process is interrupted and Finalize() is called.
 type BlockProcessor interface {
-
-	// Initialise is called at the beginning to pass the RPC client to the block processor.
-	Initialise(client *rpc.Client) error
-
 	// BlockRange is called at the beginning to let the block fetching logic know
 	// what blocks to fetch and pass to ProcessBlock.
 	//
@@ -45,12 +41,7 @@ type BlockProcessor interface {
 	ProcessBlock(block *rpc.Block) error
 
 	// Finalize is called when the whole block range is fetcher or the process is interrupted.
-	// It is passed the first unprocessed block number, i.e. the block number that would be
-	// processed next had the fetching process continued.
-	//
-	// It can be remembered somehow and then returned from BlockRange() to just keep
-	// processing new blocks incrementally.
-	Finalize(nextBlockToProcess uint32) error
+	Finalize() error
 }
 
 // Context represents a running block fetcher that can be interrupted.
@@ -78,11 +69,6 @@ func Run(client *rpc.Client, processor BlockProcessor) (*Context, error) {
 		blockCh:   make(chan *rpc.Block),
 	}
 
-	// Initialise the processor.
-	if err := processor.Initialise(client); err != nil {
-		return nil, errors.Wrap(err, "BlockProcessor.Initialise() failed")
-	}
-
 	// Start the fetcher and the processor.
 	ctx.t.Go(ctx.fetcher)
 
@@ -106,18 +92,15 @@ func (ctx *Context) fetcher() error {
 
 	// Decide whether to fetch a closed range or watch
 	// and enter the right loop accordingly.
-	var (
-		next uint32
-		err  error
-	)
+	var err error
 	if to == 0 {
-		next, err = ctx.blockWatcher(from)
+		err = ctx.blockWatcher(from)
 	} else {
-		next, err = ctx.blockFetcher(from, to)
+		err = ctx.blockFetcher(from, to)
 	}
 
 	// Call Finalize().
-	if ex := ctx.processor.Finalize(next); ex != nil && err == nil {
+	if ex := ctx.processor.Finalize(); ex != nil && err == nil {
 		err = errors.Wrap(ex, "BlockProcessor.Finalize() failed")
 	}
 
@@ -125,13 +108,13 @@ func (ctx *Context) fetcher() error {
 	return err
 }
 
-func (ctx *Context) blockWatcher(from uint32) (uint32, error) {
+func (ctx *Context) blockWatcher(from uint32) error {
 	next := from
 
 	// Get config.
 	config, err := ctx.client.GetConfig()
 	if err != nil {
-		return next, errors.Wrap(err, "failed to get steemd config")
+		return errors.Wrap(err, "failed to get steemd config")
 	}
 
 	// Fetch and process all blocks matching the given range.
@@ -139,13 +122,13 @@ func (ctx *Context) blockWatcher(from uint32) (uint32, error) {
 		// Get current properties.
 		props, err := ctx.client.GetDynamicGlobalProperties()
 		if err != nil {
-			return next, errors.Wrap(err, "failed to get steemd dynamic global properties")
+			return errors.Wrap(err, "failed to get steemd dynamic global properties")
 		}
 
 		// Process new blocks.
 		for ; props.LastIrreversibleBlockNum >= next; next++ {
 			if err := ctx.fetchAndProcess(next); err != nil {
-				return next, err
+				return err
 			}
 		}
 
@@ -154,17 +137,17 @@ func (ctx *Context) blockWatcher(from uint32) (uint32, error) {
 		select {
 		case <-time.After(time.Duration(config.SteemitBlockInterval) * time.Second):
 		case <-ctx.t.Dying():
-			return next, nil
+			return nil
 		}
 	}
 }
 
-func (ctx *Context) blockFetcher(from, to uint32) (uint32, error) {
+func (ctx *Context) blockFetcher(from, to uint32) error {
 	next := from
 
 	// Make sure we are not doing bullshit.
 	if from > to {
-		return next, errors.Errorf("invalid block range: [%v, %v]", from, to)
+		return errors.Errorf("invalid block range: [%v, %v]", from, to)
 	}
 
 	// Fetch and process all blocks matching the given range.
@@ -172,18 +155,18 @@ func (ctx *Context) blockFetcher(from, to uint32) (uint32, error) {
 		// Check for interrupts.
 		select {
 		case <-ctx.t.Dying():
-			return next, nil
+			return nil
 		default:
 		}
 
 		// Fetch and process the next block.
 		if err := ctx.fetchAndProcess(next); err != nil {
-			return next, err
+			return err
 		}
 	}
 
 	// The whole range has been processed, we are done.
-	return next, nil
+	return nil
 }
 
 func (ctx *Context) fetchAndProcess(blockNum uint32) (err error) {
