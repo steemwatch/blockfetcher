@@ -69,8 +69,9 @@ func Run(client *rpc.Client, processor BlockProcessor) (*Context, error) {
 		blockCh:   make(chan *rpc.Block),
 	}
 
-	// Start the fetcher and the processor.
+	// Start the fetcher and the finalizer.
 	ctx.t.Go(ctx.fetcher)
+	ctx.t.Go(ctx.finalizer)
 
 	// Return the new context.
 	return ctx, nil
@@ -98,14 +99,18 @@ func (ctx *Context) fetcher() error {
 	} else {
 		err = ctx.blockFetcher(from, to)
 	}
-
-	// Call Finalize().
-	if ex := ctx.processor.Finalize(); ex != nil && err == nil {
-		err = errors.Wrap(ex, "BlockProcessor.Finalize() failed")
-	}
-
-	// Return the first error that occurred.
 	return err
+}
+
+func (ctx *Context) finalizer() error {
+	// Wait for the dying signal.
+	<-ctx.t.Dying()
+
+	// Run the finalizer.
+	if err := ctx.processor.Finalize(); err != nil {
+		return errors.Wrap(err, "BlockProcessor.Finalize() failed")
+	}
+	return nil
 }
 
 func (ctx *Context) blockWatcher(from uint32) error {
@@ -152,14 +157,6 @@ func (ctx *Context) blockFetcher(from, to uint32) error {
 
 	// Fetch and process all blocks matching the given range.
 	for ; next <= to; next++ {
-		// Check for interrupts.
-		select {
-		case <-ctx.t.Dying():
-			return nil
-		default:
-		}
-
-		// Fetch and process the next block.
 		if err := ctx.fetchAndProcess(next); err != nil {
 			return err
 		}
@@ -172,6 +169,13 @@ func (ctx *Context) blockFetcher(from, to uint32) error {
 func (ctx *Context) fetchAndProcess(blockNum uint32) (err error) {
 	defer handlePanic(&err)
 
+	// Check for the dying signal first.
+	select {
+	case <-ctx.t.Dying():
+		return tomb.ErrDying
+	default:
+	}
+
 	// Fetch the block.
 	block, err := ctx.client.GetBlock(blockNum)
 	if err != nil {
@@ -180,7 +184,7 @@ func (ctx *Context) fetchAndProcess(blockNum uint32) (err error) {
 
 	// Process the block.
 	if err := ctx.processor.ProcessBlock(block); err != nil {
-		return errors.Wrapf(err, "failed to process block %v", blockNum)
+		return errors.Wrapf(err, "BlockProcessor.ProcessBlock() failed for block %v", blockNum)
 	}
 	return nil
 }
