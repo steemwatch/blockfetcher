@@ -46,7 +46,8 @@ type BlockProcessor interface {
 
 // Context represents a running block fetcher that can be interrupted.
 type Context struct {
-	client *rpc.Client
+	addr      string
+	reconnect bool
 
 	processor BlockProcessor
 
@@ -55,18 +56,40 @@ type Context struct {
 	t tomb.Tomb
 }
 
+type FetcherOption func(*Context)
+
+// SetReconnect, when set to true, makes the block fetcher wait for the RPC endpoint
+// to come up in case it is not available and also try to reconnect when the connection
+// to the RPC endpoint is lost.
+//
+// The side-effect of using the reconnecting mode is that the fetcher will never
+// return a connection-related error, so in case the configuration is wrong,
+// the fetcher will keep waiting forever without crashing.
+func SetReconnect(reconnect bool) FetcherOption {
+	return func(ctx *Context) {
+		ctx.reconnect = reconnect
+	}
+}
+
 // Run spawns a new block fetcher using the given BlockProcessor.
 //
-// The fetcher keeps fetching blocks until the whole block range specified is fetched
-// or an error is encountered. It is not trying to be clever about closed connections and such.
+// The fetcher keeps fetching blocks until the whole block range specified is fetched.
+// Unless configured otherwise, the fetcher will exit when there are any issues with
+// the RPC endpoint connection. It can be set, however, to act in a bit more clever
+// way and re-establish the connection as needed.
 //
 // client.Close() is not called by this package, it has to be called manually.
-func Run(client *rpc.Client, processor BlockProcessor) (*Context, error) {
+func Run(endpointAddress string, processor BlockProcessor, opts ...FetcherOption) (*Context, error) {
 	// Prepare a new Context object.
 	ctx := &Context{
-		client:    client,
+		addr:      endpointAddress,
 		processor: processor,
 		blockCh:   make(chan *rpc.Block),
+	}
+
+	// Set the options.
+	for _, opt := range opts {
+		opt(ctx)
 	}
 
 	// Start the fetcher and the finalizer.
