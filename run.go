@@ -46,9 +46,9 @@ type BlockProcessor interface {
 
 // Context represents a running block fetcher that can be interrupted.
 type Context struct {
-	addr      string
 	reconnect bool
 
+	client    rpcClient
 	processor BlockProcessor
 
 	blockCh chan *rpc.Block
@@ -82,7 +82,6 @@ func SetReconnect(reconnect bool) FetcherOption {
 func Run(endpointAddress string, processor BlockProcessor, opts ...FetcherOption) (*Context, error) {
 	// Prepare a new Context object.
 	ctx := &Context{
-		addr:      endpointAddress,
 		processor: processor,
 		blockCh:   make(chan *rpc.Block),
 	}
@@ -90,6 +89,19 @@ func Run(endpointAddress string, processor BlockProcessor, opts ...FetcherOption
 	// Set the options.
 	for _, opt := range opts {
 		opt(ctx)
+	}
+
+	// Instantiate the right RPC client.
+	if ctx.reconnect {
+		ctx.client = &reconnectingClient{
+			Addr: endpointAddress,
+		}
+	} else {
+		client, err := rpc.Dial(endpointAddress)
+		if err != nil {
+			return nil, err
+		}
+		ctx.client = client
 	}
 
 	// Start the fetcher and the finalizer.
@@ -126,6 +138,9 @@ func (ctx *Context) fetcher() error {
 }
 
 func (ctx *Context) finalizer() error {
+	// Close the RPC client on exit.
+	defer ctx.client.Close()
+
 	// Wait for the dying signal.
 	<-ctx.t.Dying()
 
