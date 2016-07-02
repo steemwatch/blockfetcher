@@ -93,9 +93,7 @@ func Run(endpointAddress string, processor BlockProcessor, opts ...FetcherOption
 
 	// Instantiate the right RPC client.
 	if ctx.reconnect {
-		ctx.client = &reconnectingClient{
-			Addr: endpointAddress,
-		}
+		ctx.client = newReconnectingClient(endpointAddress, 30*time.Second)
 	} else {
 		client, err := rpc.Dial(endpointAddress)
 		if err != nil {
