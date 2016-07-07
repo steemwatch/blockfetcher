@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/go-steem/rpc"
+	"github.com/go-steem/rpc/apis/database"
 	"github.com/pkg/errors"
 	"gopkg.in/tomb.v2"
 )
@@ -38,7 +39,7 @@ type BlockProcessor interface {
 	BlockRange() (blockRangeFrom, blockRangeTo uint32)
 
 	// ProcessBlock is called when a new block is received.
-	ProcessBlock(block *rpc.Block) error
+	ProcessBlock(block *database.Block) error
 
 	// Finalize is called when the whole block range is fetcher or the process is interrupted.
 	Finalize() error
@@ -50,7 +51,7 @@ type Context struct {
 
 	processor BlockProcessor
 
-	blockCh chan *rpc.Block
+	blockCh chan *database.Block
 
 	t tomb.Tomb
 }
@@ -66,7 +67,7 @@ func Run(client *rpc.Client, processor BlockProcessor) (*Context, error) {
 	ctx := &Context{
 		client:    client,
 		processor: processor,
-		blockCh:   make(chan *rpc.Block),
+		blockCh:   make(chan *database.Block),
 	}
 
 	// Start the fetcher and the finalizer.
@@ -117,7 +118,7 @@ func (ctx *Context) blockWatcher(from uint32) error {
 	next := from
 
 	// Get config.
-	config, err := ctx.client.GetConfig()
+	config, err := ctx.client.Database.GetConfig()
 	if err != nil {
 		return errors.Wrap(err, "failed to get steemd config")
 	}
@@ -125,7 +126,7 @@ func (ctx *Context) blockWatcher(from uint32) error {
 	// Fetch and process all blocks matching the given range.
 	for {
 		// Get current properties.
-		props, err := ctx.client.GetDynamicGlobalProperties()
+		props, err := ctx.client.Database.GetDynamicGlobalProperties()
 		if err != nil {
 			return errors.Wrap(err, "failed to get steemd dynamic global properties")
 		}
@@ -177,7 +178,7 @@ func (ctx *Context) fetchAndProcess(blockNum uint32) (err error) {
 	}
 
 	// Fetch the block.
-	block, err := ctx.client.GetBlock(blockNum)
+	block, err := ctx.client.Database.GetBlock(blockNum)
 	if err != nil {
 		return errors.Wrapf(err, "failed to fetch block %v", blockNum)
 	}
